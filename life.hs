@@ -1,56 +1,109 @@
-import qualified Data.Map as M
 import qualified Data.Set as S
 
 import Data.Maybe (fromJust, Maybe(Just, Nothing), isNothing)
 import Data.List (findIndex)
 import Data.IORef (newIORef)
 import Graphics.Rendering.OpenGL (vertex, renderPrimitive, flush, ($=!), ($=), 
-                                  get, color, GLfloat,
+                                  get, color, GLfloat, GLsizei,
                                   PrimitiveMode(Quads),
                                   Vertex2(Vertex2),
                                   Vertex3(Vertex3),
                                   Color3(Color3),
                                   ClearBuffer(ColorBuffer))
 import Graphics.UI.GLUT (clear, postRedisplay, addTimerCallback, 
-                         getArgsAndInitialize, initialDisplayMode, 
-                         createWindow, displayCallback, mainLoop, swapBuffers,
+                         getArgsAndInitialize, initialDisplayMode,
+                         initialWindowSize, createWindow, displayCallback, 
+                         mainLoop, swapBuffers,
+                         Size(Size),
                          DisplayMode(DoubleBuffered))
 import Debug.Trace (trace)
 
-updateIntervalInMillis = 1000
+updateIntervalInMillis = 100
 
-screenWidth = 10 :: GLfloat
-screenHeight = 10 :: GLfloat
+windowWidth = 600 :: GLsizei
+windowHeight = 600 :: GLsizei
 
-cellWidth = (7 / (screenWidth * 8))
-cellHeight = (7 / (screenHeight * 8))
+logicalWidth = ((fromIntegral windowWidth) / 10) :: GLfloat
+logicalHeight = ((fromIntegral windowHeight) / 10) :: GLfloat
 
-data World = World { worldMap :: M.Map Int (S.Set Int) }
+cellWidth = (7 / (logicalWidth * 8))
+cellHeight = (7 / (logicalHeight * 8))
 
-worldEmpty = World { worldMap = M.empty }
+data Cell = Cell { cellX :: Int, cellY :: Int }
 
-worldSet world (x, y) = World 
-  { worldMap = M.insert x (case M.lookup x (worldMap world) of
-                              Nothing -> (S.singleton y)
-                              Just set -> (S.insert y set)) (worldMap world) }
+makeCell x y = Cell { cellX = x, cellY = y }
 
-worldCells world =
-  M.foldlWithKey (\ acc x set -> S.fold (\ y acc -> (x, y) : acc) acc set) 
-    [] (worldMap world)
+instance Eq Cell where
+  a == b = ((cellX a) == (cellX b)) && ((cellY a) == (cellY b))
 
--- todo:
-worldNext world = world
+instance Ord Cell where
+  a <= b = if (cellX a) == (cellX b)
+    then (cellY a) <= (cellY b) else (cellX a) < (cellX b)
+
+data World = World { worldLiveCells :: S.Set Cell }
+
+instance Eq World where
+  a == b = (worldLiveCells a) == (worldLiveCells b)
+
+cellNeighbors cell = 
+  [ makeCell ((cellX cell) - 1) ((cellY cell) - 1),
+    makeCell ((cellX cell)    ) ((cellY cell) - 1),
+    makeCell ((cellX cell) + 1) ((cellY cell) - 1),
+    makeCell ((cellX cell) + 1) ((cellY cell)    ),
+    makeCell ((cellX cell) + 1) ((cellY cell) + 1),
+    makeCell ((cellX cell)    ) ((cellY cell) + 1),
+    makeCell ((cellX cell) - 1) ((cellY cell) + 1),
+    makeCell ((cellX cell) - 1) ((cellY cell)    ) ]
+
+cellLive cell world = S.member cell (worldLiveCells world)
+
+cellLiveNeighborCount cell world = foldl 
+  (\ sum cell -> if (cellLive cell world) then sum + 1 else sum) 0 
+  (cellNeighbors cell)
+  
+neighborRetain 2 = True
+neighborRetain 3 = True
+neighborRetain _ = False
+
+neighborAdd 3 = True
+neighborAdd _ = False
+
+cellLiveNext cell world =
+  (if (cellLive cell world) then neighborRetain else neighborAdd) 
+    (cellLiveNeighborCount cell world)
+
+cellVisit cell world acc = World 
+  { worldLiveCells = 
+      (if (cellLiveNext cell world) then S.insert else S.delete) 
+        cell (worldLiveCells acc) }
+
+worldVisit cell world acc = foldl (\ acc cell -> cellVisit cell world acc) acc
+  (cell : (cellNeighbors cell))
+
+worldNext world =
+  S.fold (\ cell acc -> worldVisit cell world acc) world (worldLiveCells world)
+
+emptyWorld = World { worldLiveCells = S.empty }
+
+worldEquals w1 w2 = (worldLiveCells w1) == (worldLiveCells w2) 
+
+worldAddLiveCell world cell =
+  world { worldLiveCells = S.insert cell (worldLiveCells world) }
+
+worldAddLiveCells world cells = foldl worldAddLiveCell world cells
 
 split index string = (take index string, drop (index + 1) string)
 
-parseCoordinate string =
+parseCell string =
   let (first, second) = 
         split (fromJust (findIndex (\ c -> c == ',') string)) string in
-    (read first, read second)
+    makeCell (read first) (read second)
 
-cellQuad x y =
-  let scaledX = ((fromIntegral x) / screenWidth) - (cellWidth / 2.0)
-      scaledY = ((fromIntegral y) / screenHeight) - (cellHeight / 2.0) in do
+cellQuad cell =
+  let scaledX = ((fromIntegral (cellX cell)) / logicalWidth) 
+        - (cellWidth / 2.0)
+      scaledY = ((fromIntegral (cellY cell)) / logicalHeight) 
+        - (cellHeight / 2.0) in do
     vertex (Vertex2 scaledX scaledY)
     vertex (Vertex2 scaledX (scaledY + cellHeight))
     vertex (Vertex2 (scaledX + cellWidth) (scaledY + cellHeight))
@@ -59,7 +112,8 @@ cellQuad x y =
 worldDisplay world = do 
   clear [ColorBuffer]
   myWorld <- (get world)
-  renderPrimitive Quads (mapM_ (\ (x, y) -> cellQuad x y) (worldCells myWorld))
+  renderPrimitive Quads 
+    (mapM_ (\ cell -> cellQuad cell) (S.toList (worldLiveCells myWorld)))
   swapBuffers
 
 worldUpdate world = do
@@ -68,11 +122,34 @@ worldUpdate world = do
   postRedisplay Nothing
   addTimerCallback updateIntervalInMillis (worldUpdate world)
 
-main = do 
+assert test False = putStrLn (test ++ " failed!")
+assert test True = putStrLn (test ++ " passed!")
+
+runTests = do
+  assert "empty" ((worldNext emptyWorld) == emptyWorld)
+  
+  assert "no neighbors"
+    ((worldNext (worldAddLiveCell emptyWorld (makeCell 0 0))) == emptyWorld)
+
+  let original = worldAddLiveCells emptyWorld [(makeCell 0 0),
+                                               (makeCell 0 1),
+                                               (makeCell 1 0)] in
+    assert "two neighbors"
+      ((worldNext original) == (worldAddLiveCell original (makeCell 1 1)))
+
+  let original = worldAddLiveCells emptyWorld [(makeCell 0 0),
+                                               (makeCell 0 1),
+                                               (makeCell 1 0),
+                                               (makeCell 1 1)] in
+    assert "three neighbors" ((worldNext original) == original)
+
+main = do
+  runTests
   (_, arguments) <- getArgsAndInitialize
+  initialWindowSize $= Size windowWidth windowHeight
   initialDisplayMode $= [DoubleBuffered]
   createWindow "life"
-  world <- newIORef (foldl worldSet worldEmpty (map parseCoordinate arguments))
+  world <- newIORef (worldAddLiveCells emptyWorld (map parseCell arguments))
   displayCallback $= (worldDisplay world)
   addTimerCallback updateIntervalInMillis (worldUpdate world)
   mainLoop
