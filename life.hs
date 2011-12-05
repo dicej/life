@@ -18,7 +18,7 @@ import Graphics.UI.GLUT (clear, postRedisplay, addTimerCallback,
                          DisplayMode(DoubleBuffered))
 import Debug.Trace (trace)
 
-updateIntervalInMillis = 100
+updateIntervalInMillis = 500
 
 windowWidth = 600 :: GLsizei
 windowHeight = 600 :: GLsizei
