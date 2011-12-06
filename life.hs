@@ -85,8 +85,6 @@ worldNext world =
 
 emptyWorld = World { worldLiveCells = S.empty }
 
-worldEquals w1 w2 = (worldLiveCells w1) == (worldLiveCells w2) 
-
 worldAddLiveCell world cell =
   world { worldLiveCells = S.insert cell (worldLiveCells world) }
 
